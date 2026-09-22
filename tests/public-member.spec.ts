@@ -91,9 +91,21 @@ test('公開スマホ画面でログインなしに会員結果と実料金を�
   await page.screenshot({ path: testInfo.outputPath('phone-member.png'), fullPage: true })
 })
 
-test('公開接続がofflineなら未確認と示し、管理者向けのログインや接続操作を求めない', async ({ context, page }) => {
-  await install(context, (route, url) => url.pathname === '/api/member/status'
-    ? route.fulfill({ json: { connected: false, query: null, busy: false } }) : fallback(route))
+test('公開接続がofflineや通信失敗なら未確認と示し、管理者向けの操作を求めない', async ({ context, page }) => {
+  let anonymousCalls = 0
+  let rejection: { code: string; status: number } | null = null
+  const providerError = 'ANAの空席回答を取得できませんでした。時間をおいて再度お試しください。空席なしとは判定していません。'
+  await install(context, (route, url) => {
+    if (url.pathname === '/api/member/status') return route.fulfill({ json: { connected: false, query: null, busy: false } })
+    if (url.pathname === '/api/ana/availability') {
+      anonymousCalls++
+      if (rejection) return route.fulfill({ status: rejection.status, json: { error: rejection.code } })
+      return anonymousCalls === 1
+        ? route.fulfill({ status: 502, contentType: 'text/html', body: '<!doctype html><title>Unavailable</title>' })
+        : route.fulfill({ status: 200, contentType: 'application/json', body: ` \n\t \n${JSON.stringify({ error: providerError })}` })
+    }
+    return fallback(route)
+  })
   const panel = await openPhone(page)
   await expect(panel).toContainText('現在、会員空席の照会に接続できません')
   await expect(panel).toContainText('空席なしとは判定していません')
@@ -102,6 +114,33 @@ test('公開接続がofflineなら未確認と示し、管理者向けのログ�
   await expect(panel).not.toContainText('ブックマーク')
   await expect(page.getByLabel('ワーカートークン')).toHaveCount(0)
   await expect(panel.locator('tbody tr')).toHaveCount(0)
+  const anonymous = page.getByRole('region', { name: '実際の空席を一括照会' })
+  await anonymous.getByRole('button', { name: '空席をまとめて照会' }).click()
+  await expect(anonymous.locator('.live-notice')).toContainText('時間をおいて再度お試しください。空席なしとは判定していません。')
+  await expect(anonymous).not.toContainText('npm run')
+  await expect(anonymous.getByRole('button', { name: '空席CSV' })).toBeDisabled()
+  // heartbeatの空白を含むHTTP 200でも、error本文を先に判定する。
+  await anonymous.getByRole('button', { name: '空席をまとめて照会' }).click()
+  await expect(anonymous.locator('.live-notice')).toHaveText(providerError)
+  await expect(anonymous.getByRole('status')).toContainText('照会を停止しました')
+  await expect(anonymous).not.toContainText('空席回答の形式を確認できませんでした')
+  await expect(anonymous.locator('tbody tr')).toHaveCount(0)
+  await expect(anonymous.getByRole('button', { name: '空席CSV' })).toBeDisabled()
+  const rejections = [
+    { code: 'busy', status: 429, text: 'ほかの空席照会を処理中です。少し待って' },
+    { code: 'rate_limited', status: 429, text: 'しばらく待って' },
+    { code: 'invalid_query', status: 400, text: '検索条件を確認して' },
+    { code: 'storage_unavailable', status: 503, text: '空席回答を取得できませんでした' },
+    { code: 'unknown_backend_code', status: 500, text: '空席回答を取得できませんでした' },
+  ]
+  for (const scenario of rejections) {
+    rejection = scenario
+    await anonymous.getByRole('button', { name: '空席をまとめて照会' }).click()
+    await expect(anonymous.locator('.live-notice')).toContainText(scenario.text)
+    await expect(anonymous.locator('.live-notice')).not.toContainText(scenario.code)
+    await expect(anonymous.getByRole('button', { name: '空席CSV' })).toBeDisabled()
+  }
+  expect(anonymousCalls).toBe(2 + rejections.length)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
 

@@ -256,23 +256,69 @@ async function anonymousApi(request: Request, db: D1Database, now: number) {
   const acquired = await db.prepare("INSERT INTO mf_locks(name,lease_id,expires_at) VALUES('anonymous',?,?) ON CONFLICT(name) DO UPDATE SET lease_id=excluded.lease_id,expires_at=excluded.expires_at WHERE mf_locks.expires_at<=? RETURNING lease_id").bind(leaseId, now + 10 * 60_000, now).first<{ lease_id: string }>()
   if (!acquired) reject(429, 'busy')
   const controller = new AbortController()
-  const abort = () => controller.abort()
-  request.signal.addEventListener('abort', abort, { once: true })
-  if (request.signal.aborted) abort()
-  const timeout = setTimeout(abort, 10 * 60_000)
   let stage = 'starting'
-  try { return json(await searchAnaAvailability(query, controller.signal, progress => { stage = ANA_STAGES.get(progress.stage) || 'unknown' })) }
-  catch (error) {
-    // 固定段階とHTTP番号だけを記録する。外部本文・URL・認証値・検索条件は記録しない。
-    const http = error instanceof Error ? /^ANAチャットの(?:公開設定|初期JWT認証|Kore認証|RTM接続準備)に失敗しました（HTTP ([1-5]\d{2})）。$/.exec(error.message) : null
-    console.error('ana_public_failure', { stage, upstreamStatus: http ? Number(http[1]) : null })
-    return json({ error: 'ANAの空席回答を取得できませんでした。空席なしを意味するものではありません。' }, 502)
-  }
-  finally {
+  let closed = false
+  let heartbeat: ReturnType<typeof setInterval> | undefined
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  let releasePromise: Promise<void> | undefined
+  let output: ReadableStreamDefaultController<Uint8Array>
+  const release = () => {
+    clearInterval(heartbeat)
     clearTimeout(timeout)
     request.signal.removeEventListener('abort', abort)
-    await db.prepare("DELETE FROM mf_locks WHERE name='anonymous' AND lease_id=?").bind(leaseId).run()
+    return releasePromise ??= db.prepare("DELETE FROM mf_locks WHERE name='anonymous' AND lease_id=?")
+      .bind(leaseId).run().then(() => undefined)
   }
+  const abort = () => {
+    if (closed) return
+    closed = true
+    controller.abort()
+    output.error(new Error('空席照会を中止しました。'))
+    void release().catch(() => { /* リース期限でも解放される。外部例外は出力しない。 */ })
+  }
+  const encoder = new TextEncoder()
+  const stream = new ReadableStream<Uint8Array>({
+    start(streamController) {
+      output = streamController
+      // JSONの先頭空白はresponse.json()で許容され、待機中の接続維持にも使える。
+      output.enqueue(encoder.encode(' '))
+      heartbeat = setInterval(() => { if (!closed) output.enqueue(encoder.encode(' ')) }, 15_000)
+      timeout = setTimeout(() => controller.abort(), 10 * 60_000)
+      request.signal.addEventListener('abort', abort, { once: true })
+      if (request.signal.aborted) { abort(); return }
+      void (async () => {
+        let result: unknown
+        try {
+          result = await searchAnaAvailability(query, controller.signal, progress => { stage = ANA_STAGES.get(progress.stage) || 'unknown' })
+        } catch (error) {
+          if (closed) return
+          // 固定段階とHTTP番号だけを記録する。外部本文・URL・認証値・検索条件は記録しない。
+          const http = error instanceof Error ? /^ANAチャットの(?:公開設定|初期JWT認証|Kore認証|RTM接続準備)に失敗しました（HTTP ([1-5]\d{2})）。$/.exec(error.message) : null
+          console.error('ana_public_failure', { stage, upstreamStatus: http ? Number(http[1]) : null })
+          result = { error: 'ANAの空席回答を取得できませんでした。空席なしを意味するものではありません。' }
+        }
+        if (closed) return
+        await release()
+        if (closed) return
+        output.enqueue(encoder.encode(JSON.stringify(result)))
+        closed = true
+        output.close()
+      })().catch(() => {
+        if (!closed) { closed = true; output.error(new Error('空席照会を完了できませんでした。')) }
+        controller.abort()
+        void release().catch(() => { /* 外部例外は出力しない。 */ })
+      })
+    },
+    async cancel() {
+      closed = true
+      controller.abort()
+      await release()
+    },
+  })
+  return new Response(stream, { headers: {
+    'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store, no-transform',
+    'X-Content-Type-Options': 'nosniff',
+  } })
 }
 
 export default {

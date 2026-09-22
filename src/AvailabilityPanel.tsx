@@ -8,6 +8,12 @@ type Snapshot = { offer: AnaChatOffer; checkedAt: string }
 type Reply = { offers: AnaChatOffer[]; checkedAt: string; partial: boolean; notes: string[]; error?: string }
 const key = (o: AnaChatOffer) => [o.flightNumber, o.originLabel, o.destinationLabel, o.date, o.time, o.cabin].join('|')
 const clock = (date: string) => new Intl.DateTimeFormat('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Tokyo' }).format(new Date(date))
+function availabilityError(error: string): string {
+  if (error === 'busy') return 'ほかの空席照会を処理中です。少し待ってから再度お試しください。'
+  if (error === 'rate_limited') return '照会が集中しています。しばらく待ってから再度お試しください。'
+  if (error === 'invalid_query') return '検索条件を確認して、再度お試しください。'
+  return /[^\x00-\x7F]/.test(error) ? error : '空席回答を取得できませんでした。時間をおいて再度お試しください。空席なしとは判定していません。'
+}
 
 export default function AvailabilityPanel({ results, filters }: { results: SearchResult[]; filters: SearchFilters }) {
   const [destination, setDestination] = useState('all')
@@ -40,9 +46,14 @@ export default function AvailabilityPanel({ results, filters }: { results: Searc
       for (const [index, query] of queries.entries()) {
         setActive(`${query.origin} → ${query.destination} / ${query.dateFrom}〜${query.dateTo}`)
         const response = await fetch('/api/ana/availability', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(query), signal: controller.signal })
-        if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('空席照会サーバーに接続できません。npm run dev または npm run preview で起動してください。')
+        if (!response.headers.get('content-type')?.includes('application/json')) throw new Error(
+          ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)
+            ? '空席照会サーバーに接続できません。npm run dev または npm run preview で起動してください。'
+            : '空席照会サーバーとの通信に失敗しました。時間をおいて再度お試しください。空席なしとは判定していません。',
+        )
         const data = await response.json() as Reply
-        if (!response.ok) throw new Error(data.error || '空席回答を取得できませんでした。')
+        if (typeof data.error === 'string') throw new Error(availabilityError(data.error))
+        if (!response.ok) throw new Error('空席回答を取得できませんでした。')
         if (!Array.isArray(data.offers) || !Number.isFinite(Date.parse(data.checkedAt))) throw new Error('空席回答の形式を確認できませんでした。')
         if (controller.signal.aborted) return
         const matched = filterOffersForQuery(data.offers, query, filters.cabin)

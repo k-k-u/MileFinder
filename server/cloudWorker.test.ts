@@ -227,7 +227,9 @@ describe('公開匿名API', () => {
       progress?.({ stage: '公開設定の取得', pages: 0 })
       throw new Error('ANAチャットの公開設定に失敗しました（HTTP 403）。')
     })
-    expect((await call('/api/ana/availability', 'POST', query)).response.status).toBe(502)
+    const firstFailure = await call('/api/ana/availability', 'POST', query)
+    expect(firstFailure.response.status).toBe(200)
+    expect(firstFailure.data.error).toContain('空席回答を取得できませんでした')
     expect(diagnostic).toHaveBeenLastCalledWith('ana_public_failure', { stage: 'configuration', upstreamStatus: 403 })
     vi.mocked(searchAnaAvailability).mockImplementation(async (_query, _signal, progress) => {
       progress?.({ stage: 'private external value', pages: 0 })
@@ -251,7 +253,61 @@ describe('公開匿名API', () => {
     expect((await first).response.status).toBe(200)
     vi.mocked(searchAnaAvailability).mockRejectedValue(new Error('private upstream data'))
     const failed = await call('/api/ana/availability', 'POST', query)
-    expect(failed.response.status).toBe(502)
+    expect(failed.response.status).toBe(200)
+    expect(failed.data.error).toContain('空席回答を取得できませんでした')
     expect(JSON.stringify(failed.data)).not.toContain('private upstream data')
+  })
+
+  it('照会完了前にJSON応答を開始し、15秒ごとの空白と末尾の結果をJSONとして読める', async () => {
+    vi.useFakeTimers()
+    let finish!: (value: Awaited<ReturnType<typeof searchAnaAvailability>>) => void
+    vi.mocked(searchAnaAvailability).mockImplementation(() => new Promise(resolve => { finish = resolve }))
+    const response = await cloudWorker.fetch(new Request(SITE + '/api/ana/availability', {
+      method: 'POST', headers: { origin: SITE, 'content-type': 'application/json' },
+      body: JSON.stringify({ origin: 'TYO', destination: 'HNL', dateFrom: '2026-10-01', dateTo: '2026-10-01' }),
+    }), env)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toBe('application/json; charset=utf-8')
+    expect(response.headers.get('cache-control')).toBe('no-store, no-transform')
+    const reader = response.body!.getReader(), decoder = new TextDecoder()
+    let text = decoder.decode((await reader.read()).value)
+    expect(text).toBe(' ')
+    await vi.advanceTimersByTimeAsync(15_000)
+    text += decoder.decode((await reader.read()).value)
+    expect(text).toBe('  ')
+    const value = { offers: [], checkedAt: new Date().toISOString(), source: 'ana-public-chat' as const, accountScope: 'anonymous' as const, partial: true, notes: [] }
+    finish(value)
+    text += decoder.decode((await reader.read()).value)
+    expect(JSON.parse(text)).toEqual(value)
+    expect((await reader.read()).done).toBe(true)
+    expect(db.raw.prepare("SELECT COUNT(*) AS count FROM mf_locks WHERE name='anonymous'").get()?.count).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('ストリーム取消とrequest中断の両方でANA照会を中断してリース・タイマーを解放する', async () => {
+    vi.useFakeTimers()
+    for (const action of ['stream', 'request'] as const) {
+      let providerSignal: AbortSignal | undefined
+      vi.mocked(searchAnaAvailability).mockImplementation((_query, signal) => new Promise((_resolve, reject) => {
+        providerSignal = signal
+        signal!.addEventListener('abort', () => reject(new Error('private abort reason')), { once: true })
+      }))
+      const controller = new AbortController()
+      const response = await cloudWorker.fetch(new Request(SITE + '/api/ana/availability', {
+        method: 'POST', signal: controller.signal,
+        headers: { origin: SITE, 'content-type': 'application/json' },
+        body: JSON.stringify({ origin: 'TYO', destination: 'HNL', dateFrom: '2026-10-01', dateTo: '2026-10-01' }),
+      }), env)
+      const reader = response.body!.getReader()
+      await reader.read()
+      if (action === 'stream') await reader.cancel()
+      else {
+        controller.abort()
+        await expect(reader.read()).rejects.toThrow('空席照会を中止しました')
+      }
+      expect(providerSignal?.aborted).toBe(true)
+      expect(db.raw.prepare("SELECT COUNT(*) AS count FROM mf_locks WHERE name='anonymous'").get()?.count).toBe(0)
+      expect(vi.getTimerCount()).toBe(0)
+    }
   })
 })
