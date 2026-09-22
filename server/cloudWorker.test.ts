@@ -48,7 +48,7 @@ beforeEach(() => {
   env = { DB: db, MEMBER_WORKER_TOKEN: SECRET }
   vi.mocked(searchAnaAvailability).mockReset()
 })
-afterEach(() => { db.raw.close(); vi.useRealTimers() })
+afterEach(() => { db.raw.close(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 async function call(path: string, method = 'GET', value?: unknown, options: { worker?: boolean; token?: string; origin?: string | null; ip?: string } = {}) {
   const headers = new Headers({ 'cf-connecting-ip': options.ip || '192.0.2.1' })
@@ -220,7 +220,26 @@ describe('D1の永続ジョブ・lease・安全な結果', () => {
 })
 
 describe('公開匿名API', () => {
+  it('失敗診断は固定stageとHTTP番号だけとし、未知の外部文字列をログにも返さない', async () => {
+    const diagnostic = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const query = { origin: 'TYO', destination: 'HNL', dateFrom: '2026-10-01', dateTo: '2026-10-01' }
+    vi.mocked(searchAnaAvailability).mockImplementation(async (_query, _signal, progress) => {
+      progress?.({ stage: '公開設定の取得', pages: 0 })
+      throw new Error('ANAチャットの公開設定に失敗しました（HTTP 403）。')
+    })
+    expect((await call('/api/ana/availability', 'POST', query)).response.status).toBe(502)
+    expect(diagnostic).toHaveBeenLastCalledWith('ana_public_failure', { stage: 'configuration', upstreamStatus: 403 })
+    vi.mocked(searchAnaAvailability).mockImplementation(async (_query, _signal, progress) => {
+      progress?.({ stage: 'private external value', pages: 0 })
+      throw new Error('private external value')
+    })
+    const failed = await call('/api/ana/availability', 'POST', query)
+    expect(diagnostic).toHaveBeenLastCalledWith('ana_public_failure', { stage: 'unknown', upstreamStatus: null })
+    expect(JSON.stringify(failed.data) + JSON.stringify(diagnostic.mock.calls)).not.toContain('private external value')
+  })
+
   it('共有validatorとD1のlockでprovider呼出を1件に制限する', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
     let finish!: (value: Awaited<ReturnType<typeof searchAnaAvailability>>) => void
     vi.mocked(searchAnaAvailability).mockImplementation(() => new Promise(resolve => { finish = resolve }))
     const query = { origin: 'TYO', destination: 'HNL', dateFrom: '2026-10-01', dateTo: '2026-10-02' }

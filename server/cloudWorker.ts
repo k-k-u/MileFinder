@@ -13,6 +13,14 @@ const RETENTION_MS = 30 * 60_000
 const CACHE_MS = 2 * 60_000
 const QUEUE_LIMIT = 8
 const WORKER_ERRORS = new Set(['captcha', 'login', 'unsupported', 'failed', 'timeout', 'cancelled'])
+const ANA_STAGES = new Map([
+  ['公開設定の取得', 'configuration'], ['初期JWT認証', 'initial_auth'], ['Kore認証', 'kore_auth'],
+  ['RTM接続準備', 'rtm'], ['WebSocket接続', 'websocket'], ['チャットの開始通知待ち', 'ready'],
+  ['ログイン確認', 'login_prompt'], ['検索方法の選択', 'method'], ['直行便の指定', 'direct'],
+  ['特典航空券の種類', 'award_type'], ['出発日の入力', 'date'], ['出発日の確認', 'date_confirm'],
+  ['出発地の入力', 'origin'], ['到着地の入力', 'destination'], ['搭乗クラスの選択', 'cabin'],
+  ['検索条件の最終確認', 'confirmation'], ['空席結果の取得', 'results'],
+])
 const initialized = new WeakMap<D1Database, Promise<void>>()
 
 type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
@@ -252,8 +260,14 @@ async function anonymousApi(request: Request, db: D1Database, now: number) {
   request.signal.addEventListener('abort', abort, { once: true })
   if (request.signal.aborted) abort()
   const timeout = setTimeout(abort, 10 * 60_000)
-  try { return json(await searchAnaAvailability(query, controller.signal)) }
-  catch { return json({ error: 'ANAの空席回答を取得できませんでした。空席なしを意味するものではありません。' }, 502) }
+  let stage = 'starting'
+  try { return json(await searchAnaAvailability(query, controller.signal, progress => { stage = ANA_STAGES.get(progress.stage) || 'unknown' })) }
+  catch (error) {
+    // 固定段階とHTTP番号だけを記録する。外部本文・URL・認証値・検索条件は記録しない。
+    const http = error instanceof Error ? /^ANAチャットの(?:公開設定|初期JWT認証|Kore認証|RTM接続準備)に失敗しました（HTTP ([1-5]\d{2})）。$/.exec(error.message) : null
+    console.error('ana_public_failure', { stage, upstreamStatus: http ? Number(http[1]) : null })
+    return json({ error: 'ANAの空席回答を取得できませんでした。空席なしを意味するものではありません。' }, 502)
+  }
   finally {
     clearTimeout(timeout)
     request.signal.removeEventListener('abort', abort)

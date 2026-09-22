@@ -163,7 +163,7 @@ WebSocket送信は `clientMessageId`、`resourceid`、`message.body`、`agentDes
 
 往復対応では、空席照合18件・区間検証7件・回答解析60件の単体テスト、往復表示4件・既存片道表示5件のブラウザテストが成功した。両方向の回答待ち、東京の異空港への誤結合防止、片側0席・取得失敗、人数分の合計予算、復路の現地出発日と往復CSVを含む。
 
-`dist/` の静的配信だけではローカルAPIが存在しない。空席連携は `npm run dev` またはビルド後の `npm run preview` によるNode.js側の処理を必要とする。
+この節の実取得は `npm run dev` またはビルド後の `npm run preview` によるローカルNode.js版で確認した。静的ファイルだけの配信では空席APIは動作しない。現在はSitesのWorkerによる公開APIも配備している。公開構成と公開先での実通信の確認状況は [DEPLOYMENT.md](../DEPLOYMENT.md) を参照し、ここに記載したローカルの成功と区別する。
 
 [ANA公式告知](https://www.ana.co.jp/ja/jp/topics/notice220715/)でも自動チャットによる国際線特典航空券空席照会を案内している。[チャット案内](https://www.ana.co.jp/ja/jp/guide/contact/amc/chatbot/)では予約・変更・取り消しはできないと説明されており、検索と予約操作を区別する。
 

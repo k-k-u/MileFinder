@@ -21,7 +21,7 @@ ANAタブはlocalhostのMileFinderとのみ `postMessage` で接続します。�
 
 ## Sitesの保存と配備
 
-配備先は [MileFinder](https://milefinder-ana-awards.raisin7524.chatgpt.site) です。URLの払い出しだけでは配備成功を意味しません。初回公開時は以下のビルド・保存・配備と、公開先での確認まで行います。
+配備先は [MileFinder](https://milefinder-ana-awards.raisin7524.chatgpt.site) です。2026年9月23日03:42:17（日本時間）、version 1の配備が `succeeded` となり、公開アクセスでページを表示できることを確認しました。更新時も以下のビルド・保存・配備と、公開先での確認まで行います。
 
 既存の `.openai/hosting.json` にある `project_id` を再利用します。同じサイトを再作成しません。Sitesの管理設定には論理的なD1のbinding名を指定し、実際のデータベースはSitesが管理します。設定例は `{"project_id":"既存のID","d1":"DB","r2":null}` です。ここに認証情報を保存しません。[Sites公式説明](https://learn.chatgpt.com/docs/sites)
 
@@ -37,7 +37,15 @@ npm run preview:cloud
 
 この構成のD1のダミーIDはローカル開発用です。Sitesの実DBの識別子やAPIトークンを `vite.cloud.config.ts` へ埋め込みません。`MEMBER_WORKER_TOKEN` はSitesの秘密環境変数として登録します。値を変更した場合は、対象の保存済みバージョンを再配備して反映します。ANAの会員認証とは別の値であり、公開利用者へ渡しません。
 
-アーカイブにはソースツリー全体ではなく、`dist/server/index.js` とWorker設定、`dist/client/` の静的アセット、`dist/.openai/hosting.json` を含めます。公式Sites Vite pluginは設定ファイルを `dist/.openai/hosting.json` へ、任意のDrizzle migrationを `dist/.openai/drizzle/` へコピーします。Worker入口の選択はこのpluginの役割ではなく、Cloudflare側のビルド設定で行います。[公式plugin](https://github.com/openai/sites/blob/main/packages/sites-vite-plugin/README.md)・[公式template](https://github.com/openai/sites/blob/main/packages/create-sites/templates/vinext/vite.config.ts)
+このアプリの配備アーカイブには、ルート直下の `.openai/hosting.json` と、`dist/server/index.js`・`dist/server/wrangler.json`・`dist/client/` を含めます。リポジトリのルートで次を実行します。
+
+```powershell
+tar -czf milefinder-sites.deployment.tar.gz .openai dist/server dist/client
+```
+
+`tar -C dist .openai server client` のように `dist` 階層を取り除いた形は、Sitesの保存時に対応するWorker入口がないとして拒否されました。上記の階層を保ったアーカイブでversion 1の保存成功を確認しています。ソースツリー全体、`node_modules`、ローカル設定、暗号化済み管理キーは含めません。
+
+公式Sites Vite pluginは設定ファイルを `dist/.openai/hosting.json` へ、任意のDrizzle migrationを `dist/.openai/drizzle/` へコピーします。これはビルド出力であり、このアプリの配備アーカイブで要求されるルート直下の設定とは配置を区別します。Worker入口の選択はこのpluginの役割ではなく、Cloudflare側のビルド設定で行います。[公式plugin](https://github.com/openai/sites/blob/main/packages/sites-vite-plugin/README.md)・[公式template](https://github.com/openai/sites/blob/main/packages/create-sites/templates/vinext/vite.config.ts)
 
 保存されたversion IDを指定して配備し、終端の成功状態と公開URLを確認します。API、データベース、匿名チャットの実通信、管理PCとの往復を別々に確認します。ローカルの単体テスト・模擬E2Eが成功しても、Sites上での実通信成功とは扱いません。
 
@@ -90,3 +98,18 @@ D1には、管理PCの接続条件・最終通知時刻、会員照会条件・�
 ## 公開構成の確認状況
 
 2026年9月23日、`npm run build:cloud` の成功と、`npm run preview:cloud` によるローカルのworkerd・D1の起動を確認しました。`GET /api/member/status` は200で未接続状態を返し、管理PC向けCORSの事前確認は204を返しました。この確認はローカルのCloudflareランタイムでの動作であり、公開先からANAへ接続した実証とは区別します。
+
+同日、以下の検証を完了しました。
+
+- 単体テスト222件が成功。
+- 既存E2E26件が成功。25件は初回に成功し、traceの後処理競合で失敗した1件は単独で再実行して成功。
+- 公開画面・管理PC連携のE2E7件が成功。既存分と合わせて33件を別々に実行した結果です。ANAなどの外部通信は模擬しています。
+- 公開用の型チェック・ビルドが成功。
+- 管理PC専用APIによる実際のWindows DPAPI復号と、自動構成の返却を確認。改行の除去と、子PowerShellのモジュールパス混在を修正しました。
+- 正しい階層のアーカイブからSites version 1の保存に成功し、同日03:42:17（日本時間）に本番配備が成功。公開アクセスでページ表示を確認。
+
+公開先では `GET /api/member/status` が200を返し、未接続・接続条件なしの状態を正しく表示しました。Chromeとアプリ内ブラウザの両方でページを表示し、アプリ内ブラウザのCSS幅375pxで横方向のはみ出しがないことを確認しました。実際のスマートフォン端末での操作確認とは区別します。
+
+公開先の匿名空席APIは試行時に502を返し、ANAから空席を取得する一連の成功はまだ確認していません。ローカルNode.js版の取得成功から、クラウド上でも同じように取得できるとは判断しません。取得失敗は空席なしを意味しません。
+
+管理PCと公開サイトを通した会員照会の実接続は、この時点では未確認です。ANA通常画面からの新規検索でも2回続けて結果ページが `ERR_EMPTY_RESPONSE` となり、再読み込みでも取得できませんでした。以前のローカル単日取得の成功と、この時点の接続状態を区別します。
