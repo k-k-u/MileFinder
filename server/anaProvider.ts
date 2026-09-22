@@ -280,7 +280,8 @@ async function fetchChecked(url: string, init: RequestInit, signal: AbortSignal)
     const headers = new Headers(init.headers)
     headers.set('Referer', 'https://www.ana.co.jp/')
     headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36')
-    response = await fetch(url, { ...init, headers, signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]), redirect: 'error' })
+    // workerdではredirect:'error'が使えない。3xxも下のstatus判定で拒否し、認証情報を転送しない。
+    response = await fetch(url, { ...init, headers, signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]), redirect: 'manual' })
     text = await response.text()
   } catch {
     throw new Error(`ANAチャットの${stage}で通信できませんでした。`)

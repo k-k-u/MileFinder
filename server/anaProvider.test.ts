@@ -115,6 +115,29 @@ describe('チャット開始通知の待機', () => {
 })
 
 describe('外部通信なしの段階診断', () => {
+  it('各HTTP段階でリダイレクトを追従せず3xxを拒否する', async () => {
+    const stages = ['公開設定', '初期JWT認証', 'Kore認証', 'RTM接続準備']
+    for (let index = 0; index < stages.length; index++) {
+      const { fetchMock, sockets } = mockInitialConnection()
+      fetchMock.mockReset()
+      const replies = [
+        new Response(configSource),
+        Response.json({ jwt: 'test-only-jwt' }),
+        Response.json({ authorization: { accessToken: 'test-only-access' } }),
+      ]
+      for (const reply of replies.slice(0, index)) fetchMock.mockResolvedValueOnce(reply)
+      const status = [301, 302, 307, 308][index]
+      fetchMock.mockResolvedValueOnce(new Response('external-response-not-used', {
+        status, headers: { Location: 'https://unapproved.example/redirect' },
+      }))
+      await expect(searchAnaAvailability(query))
+        .rejects.toThrow(`ANAチャットの${stages[index]}に失敗しました（HTTP ${status}）。`)
+      expect(fetchMock).toHaveBeenCalledTimes(index + 1)
+      expect(fetchMock.mock.calls.every(([, init]) => init.redirect === 'manual')).toBe(true)
+      expect(sockets).toHaveLength(0)
+    }
+  })
+
   it('初回回答timeoutに待機段階を付け、進捗には固定段階名とページ数だけを含める', async () => {
     vi.useFakeTimers()
     const { fetchMock } = mockInitialConnection()
