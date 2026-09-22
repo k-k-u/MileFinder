@@ -1,0 +1,35 @@
+{
+  "name": "milefinder",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "npm run typecheck && vite build",
+    "build:cloud": "npm run typecheck && vite build --config vite.cloud.config.ts",
+    "dev:cloud": "vite --config vite.cloud.config.ts --host 127.0.0.1 --port 8791 --strictPort",
+    "preview:cloud": "wrangler dev --config dist/server/wrangler.json --ip 127.0.0.1 --port 8791 --persist-to .wrangler/preview-state",
+    "preview": "vite preview --host 127.0.0.1",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.server.json",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.57.3",
+    "@openai/sites-vite-plugin": "^0.2.0",
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^22.20.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.1",
+    "wrangler": "^4.136.3"
+  },
+  "dependencies": {
+    "lucide-react": "^1.47.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  }
+}
